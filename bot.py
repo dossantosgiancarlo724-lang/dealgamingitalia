@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+from io import BytesIO
 
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -38,6 +40,84 @@ def salva_utenti(database):
 def e_gaming(nome):
     nome = nome.lower()
     return any(parola in nome for parola in PAROLE_GAMING)
+
+
+def font(size, bold=False):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def ellissi(draw, text, fnt, max_width):
+    if draw.textbbox((0, 0), text, font=fnt)[2] <= max_width:
+        return text
+    while len(text) > 3 and draw.textbbox((0, 0), text + "...", font=fnt)[2] > max_width:
+        text = text[:-1]
+    return text.rstrip() + "..."
+
+
+def crea_grafica(nome, prezzo, sconto, immagine_bytes):
+    """Crea una grafica verticale 1080x1350 per il post Telegram."""
+    W, H = 1080, 1350
+    canvas = Image.new("RGB", (W, H), "#f4f5f7")
+    draw = ImageDraw.Draw(canvas)
+
+    # Testata
+    draw.rounded_rectangle((35, 35, W - 35, 190), radius=32, fill="#111827")
+    draw.text((70, 58), "DEAL GAMING ITALIA", font=font(42, True), fill="white")
+    draw.text((72, 118), "🔥 OCCASIONE ECCEZIONALE", font=font(30, True), fill="#fbbf24")
+
+    # Immagine prodotto dentro una card
+    try:
+        product = Image.open(BytesIO(immagine_bytes)).convert("RGB")
+        product.thumbnail((880, 610), Image.Resampling.LANCZOS)
+        card = Image.new("RGB", (920, 650), "white")
+        px = (920 - product.width) // 2
+        py = (650 - product.height) // 2
+        card.paste(product, (px, py))
+        canvas.paste(card, (80, 225))
+        draw.rounded_rectangle((80, 225, 1000, 875), radius=28, outline="#d1d5db", width=3)
+    except Exception:
+        draw.rounded_rectangle((80, 225, 1000, 875), radius=28, fill="white", outline="#d1d5db", width=3)
+
+    # Badge sconto
+    badge = f"-{sconto:.0f}%"
+    draw.rounded_rectangle((790, 255, 965, 345), radius=24, fill="#dc2626")
+    draw.text((815, 275), badge, font=font(48, True), fill="white")
+
+    # Nome
+    nome_font = font(40, True)
+    nome_testo = ellissi(draw, nome, nome_font, 920)
+    draw.text((80, 925), nome_testo, font=nome_font, fill="#111827")
+
+    # Prezzo
+    draw.text((80, 995), "PREZZO DELL'OFFERTA", font=font(24, True), fill="#6b7280")
+    prezzo_testo = f"{prezzo:.2f} €"
+    draw.text((80, 1020), prezzo_testo, font=font(72, True), fill="#16a34a")
+
+    # Risparmio
+    risparmio = prezzo * sconto / 100
+    draw.text(
+        (80, 1115),
+        f"💸 Risparmio indicativo: {risparmio:.2f} €",
+        font=font(28, True),
+        fill="#374151",
+    )
+
+    # Footer
+    draw.rounded_rectangle((80, 1180, 1000, 1275), radius=24, fill="#111827")
+    draw.text((260, 1204), "🛒 ACQUISTA ORA", font=font(38, True), fill="white")
+
+    output = BytesIO()
+    output.name = "offerta.png"
+    canvas.save(output, format="PNG", optimize=True)
+    output.seek(0)
+    return output
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,9 +175,14 @@ async def pubblica_offerta(nome, prezzo, sconto, link, immagine):
 
     bot = Bot(token=TOKEN)
     try:
+        # Scarica l'immagine originale inviata nel test e crea la grafica automaticamente.
+        file = await bot.get_file(immagine)
+        image_bytes = bytes(await file.download_as_bytearray())
+        grafica = crea_grafica(nome, prezzo, sconto, image_bytes)
+
         await bot.send_photo(
             chat_id=canale,
-            photo=immagine,
+            photo=grafica,
             caption=messaggio,
             parse_mode="HTML",
             reply_markup=pulsante,
@@ -106,9 +191,10 @@ async def pubblica_offerta(nome, prezzo, sconto, link, immagine):
         database = carica_utenti()
         for user_id in database["utenti"]:
             try:
+                grafica.seek(0)
                 await bot.send_photo(
                     chat_id=user_id,
-                    photo=immagine,
+                    photo=grafica,
                     caption=messaggio,
                     parse_mode="HTML",
                     reply_markup=pulsante,
@@ -159,7 +245,7 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pubblica_offerta(nome, prezzo, sconto, link, immagine)
         await update.message.reply_text(
             "✅ OFFERTA PUBBLICATA!\n\n"
-            "🖼️ Immagine: OK\n"
+            "🎨 Grafica automatica: OK\n"
             "📢 Canale: OK\n"
             "🛒 Pulsante: OK\n"
             "🔔 Notifiche: OK"
@@ -189,7 +275,7 @@ async def main():
     print("================================")
     print("🤖 DealGaming Bot ONLINE!")
     print("🔥 Sistema offerte attivo!")
-    print("🖼️ Sistema immagini attivo!")
+    print("🎨 Grafica automatica attiva!")
     print("🎮 DealGaming Italia")
     print("🛍️ SuperDeal Italia")
     print("================================")
