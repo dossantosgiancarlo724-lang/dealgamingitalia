@@ -37,8 +37,7 @@ def salva_utenti(database):
 
 
 def e_gaming(nome):
-    nome = nome.lower()
-    return any(p in nome for p in PAROLE_GAMING)
+    return any(p in nome.lower() for p in PAROLE_GAMING)
 
 
 def get_font(size, bold=False):
@@ -59,7 +58,6 @@ def crea_grafica(nome, prezzo, sconto, image_bytes):
     draw.rounded_rectangle((35, 35, 1045, 190), 32, fill="#111827")
     draw.text((70, 58), "DEAL GAMING ITALIA", font=get_font(42, True), fill="white")
     draw.text((72, 118), "🔥 OCCASIONE ECCEZIONALE", font=get_font(30, True), fill="#fbbf24")
-
     try:
         product = Image.open(BytesIO(image_bytes)).convert("RGB")
         product.thumbnail((880, 610), Image.Resampling.LANCZOS)
@@ -69,7 +67,6 @@ def crea_grafica(nome, prezzo, sconto, image_bytes):
         draw.rounded_rectangle((80, 225, 1000, 875), 28, outline="#d1d5db", width=3)
     except Exception:
         draw.rounded_rectangle((80, 225, 1000, 875), 28, fill="white", outline="#d1d5db", width=3)
-
     draw.rounded_rectangle((790, 255, 965, 345), 24, fill="#dc2626")
     draw.text((815, 275), f"-{sconto:.0f}%", font=get_font(48, True), fill="white")
     draw.text((80, 925), nome[:42], font=get_font(40, True), fill="#111827")
@@ -78,7 +75,6 @@ def crea_grafica(nome, prezzo, sconto, image_bytes):
     draw.text((80, 1115), f"Risparmio indicativo: {prezzo*sconto/100:.2f} €", font=get_font(28, True), fill="#374151")
     draw.rounded_rectangle((80, 1180, 1000, 1275), 24, fill="#111827")
     draw.text((260, 1204), "ACQUISTA ORA", font=get_font(38, True), fill="white")
-
     output = BytesIO()
     output.name = "offerta.png"
     canvas.save(output, "PNG", optimize=True)
@@ -87,23 +83,20 @@ def crea_grafica(nome, prezzo, sconto, image_bytes):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    db = carica_utenti()
-    if user_id not in db["utenti"]:
-        db["utenti"].append(user_id)
-        salva_utenti(db)
     await update.message.reply_text(
-        "🔔 AVVISI ATTIVATI!\n\nRiceverai una notifica quando troviamo un'occasione davvero interessante. 🔥\n\nPer disattivare usa /stop"
+        "👋 Benvenuto in DealGaming Italia!\n\n"
+        "🔥 Le migliori occasioni vengono pubblicate direttamente nei nostri canali.\n\n"
+        "🎮 @DealGamingItalia\n"
+        "🛍️ @SuperDealItalia\n\n"
+        "Non devi attivare notifiche private: segui il canale che ti interessa!"
     )
 
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    db = carica_utenti()
-    if user_id in db["utenti"]:
-        db["utenti"].remove(user_id)
-        salva_utenti(db)
-    await update.message.reply_text("🔕 Avvisi disattivati.\n\nPuoi riattivarli con /start.")
+    await update.message.reply_text(
+        "ℹ️ Il bot non invia più notifiche private.\n\n"
+        "Le offerte vengono pubblicate direttamente nei canali Telegram."
+    )
 
 
 async def pubblica_offerta(nome, prezzo, sconto, link, image_id):
@@ -116,7 +109,8 @@ async def pubblica_offerta(nome, prezzo, sconto, link, image_id):
         f"💰 <b>{prezzo:.2f} €</b>\n📉 <b>-{sconto:.0f}%</b> di sconto\n"
         f"💸 Risparmi circa <b>{risparmio:.2f} €</b>\n\n"
         "🟢 <b>OFFERTA ATTIVA</b>\n\n"
-        "⚡ Controllala subito: il prezzo può cambiare in qualsiasi momento.\n\n👇 <b>VEDI L'OFFERTA</b>"
+        "⚡ Controllala subito: il prezzo può cambiare in qualsiasi momento.\n\n"
+        "👇 <b>VEDI L'OFFERTA</b>"
     )
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA", url=link)]])
     bot = Bot(TOKEN)
@@ -125,13 +119,6 @@ async def pubblica_offerta(nome, prezzo, sconto, link, image_id):
         image_bytes = bytes(await file.download_as_bytearray())
         graphic = crea_grafica(nome, prezzo, sconto, image_bytes)
         await bot.send_photo(chat_id=channel, photo=graphic, caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        db = carica_utenti()
-        for user_id in db["utenti"]:
-            try:
-                graphic.seek(0)
-                await bot.send_photo(chat_id=user_id, photo=graphic, caption=caption, parse_mode="HTML", reply_markup=keyboard)
-            except Exception as exc:
-                print(f"⚠️ Impossibile inviare a {user_id}: {exc}")
     finally:
         await bot.shutdown()
 
@@ -159,7 +146,7 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await pubblica_offerta(name, price, discount, link, update.message.photo[-1].file_id)
-        await update.message.reply_text("✅ OFFERTA PUBBLICATA!\n\n🎨 Grafica: OK\n📢 Canale: OK\n🛒 Pulsante: OK\n🔔 Notifiche: OK")
+        await update.message.reply_text("✅ OFFERTA PUBBLICATA NEL CANALE!\n\n🎨 Grafica: OK\n📢 Canale: OK\n🛒 Pulsante: OK")
     except Exception as exc:
         print(f"❌ ERRORE /offerta: {exc}")
         await update.message.reply_text("❌ Errore durante la pubblicazione. Controlla i log.")
@@ -172,37 +159,27 @@ async def id_utente(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     if not TOKEN:
         raise RuntimeError("Token non configurato: imposta TOKEN o BOT_TOKEN in Railway.")
-
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("offerta", offerta))
     app.add_handler(CommandHandler("id", id_utente))
-
     port = int(os.getenv("PORT", "8080"))
     domain = os.getenv("RAILWAY_PUBLIC_DOMAIN") or "dealgamingitalia-production.up.railway.app"
     path = "telegram-webhook"
     url = f"https://{domain}/{path}"
-
     print("================================")
     print("🤖 DealGaming Bot ONLINE!")
     print("🌐 WEBHOOK MODE")
     print("🎨 GRAFICA AUTOMATICA")
-    print("🎮 DealGaming Italia")
-    print("🛍️ SuperDeal Italia")
+    print("📢 SOLO PUBBLICAZIONE NEI CANALI")
     print("================================", flush=True)
-
     await app.initialize()
     await app.start()
     await app.updater.start_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=path,
-        webhook_url=url,
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
+        listen="0.0.0.0", port=port, url_path=path, webhook_url=url,
+        drop_pending_updates=True, allowed_updates=Update.ALL_TYPES,
     )
-
     try:
         while True:
             await asyncio.sleep(3600)
