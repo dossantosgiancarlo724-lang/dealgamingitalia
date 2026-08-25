@@ -7,7 +7,8 @@ from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN", "")
+# Railway: usa TOKEN se presente; BOT_TOKEN resta compatibile.
+TOKEN = os.getenv("TOKEN") or os.getenv("BOT_TOKEN") or ""
 CHANNEL_GAMING = "@DealGamingItalia"
 CHANNEL_GENERAL = "@SuperDealItalia"
 UTENTI_FILE = "utenti.json"
@@ -183,7 +184,7 @@ async def id_utente(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN non configurato nelle variabili d'ambiente di Railway.")
+        raise RuntimeError("Nessun token configurato. Imposta TOKEN o BOT_TOKEN nelle variabili Railway.")
 
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
