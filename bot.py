@@ -5,7 +5,7 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 TOKEN = os.getenv("TOKEN") or os.getenv("BOT_TOKEN") or ""
 CHANNEL_GAMING = "@DealGamingItalia"
@@ -93,9 +93,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ℹ️ Il bot non invia notifiche private. Le offerte vengono pubblicate direttamente nei canali.")
+
+
+async def ricevi_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not update.message.photo:
+        return
+    context.user_data["offerta_photo_id"] = update.message.photo[-1].file_id
     await update.message.reply_text(
-        "ℹ️ Il bot non invia più notifiche private.\n\n"
-        "Le offerte vengono pubblicate direttamente nei canali Telegram."
+        "🖼️ Foto ricevuta!\n\n"
+        "Ora rispondi a QUESTO messaggio con:\n"
+        "/offerta NOME PREZZO SCONTO LINK\n\n"
+        "Esempio:\n"
+        "/offerta PS5 648 20 https://amzn.eu/..."
     )
 
 
@@ -127,13 +139,35 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Non sei autorizzato.")
         return
-    if not update.message.photo:
-        await update.message.reply_text("📸 Invia /offerta come didascalia di una foto.\n\n/offerta PS5 648 10 https://amzn.eu/...")
+
+    # Supporta sia: foto + didascalia, sia foto inviata prima + comando successivo.
+    photo_id = None
+    caption = update.message.caption or ""
+    if update.message.photo:
+        photo_id = update.message.photo[-1].file_id
+    else:
+        photo_id = context.user_data.get("offerta_photo_id")
+
+    if not photo_id:
+        await update.message.reply_text(
+            "📸 Prima inviami la foto del prodotto.\n\n"
+            "Poi rispondi alla foto con:\n"
+            "/offerta NOME PREZZO SCONTO LINK"
+        )
         return
-    parts = (update.message.caption or "").split(maxsplit=4)
+
+    command_text = caption if caption else update.message.text or ""
+    parts = command_text.split(maxsplit=4)
     if len(parts) != 5 or parts[0] != "/offerta":
-        await update.message.reply_text("❌ Usa: /offerta NOME PREZZO SCONTO LINK")
+        await update.message.reply_text(
+            "❌ Formato non corretto.\n\n"
+            "Usa:\n"
+            "/offerta NOME PREZZO SCONTO LINK\n\n"
+            "Esempio:\n"
+            "/offerta PS5 648 20 https://amzn.eu/..."
+        )
         return
+
     _, name, price_text, discount_text, link = parts
     try:
         price = float(price_text.replace(",", "."))
@@ -141,12 +175,18 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Prezzo o sconto non validi.")
         return
+
     if price <= 0 or not 0 <= discount <= 100:
         await update.message.reply_text("❌ Controlla prezzo e sconto.")
         return
+
     try:
-        await pubblica_offerta(name, price, discount, link, update.message.photo[-1].file_id)
-        await update.message.reply_text("✅ OFFERTA PUBBLICATA NEL CANALE!\n\n🎨 Grafica: OK\n📢 Canale: OK\n🛒 Pulsante: OK")
+        await pubblica_offerta(name, price, discount, link, photo_id)
+        context.user_data.pop("offerta_photo_id", None)
+        await update.message.reply_text(
+            "✅ OFFERTA PUBBLICATA NEL CANALE!\n\n"
+            "🎨 Grafica: OK\n📢 Canale: OK\n🛒 Pulsante: OK"
+        )
     except Exception as exc:
         print(f"❌ ERRORE /offerta: {exc}")
         await update.message.reply_text("❌ Errore durante la pubblicazione. Controlla i log.")
@@ -164,6 +204,8 @@ async def main():
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("offerta", offerta))
     app.add_handler(CommandHandler("id", id_utente))
+    app.add_handler(MessageHandler(filters.PHOTO, ricevi_foto))
+
     port = int(os.getenv("PORT", "8080"))
     domain = os.getenv("RAILWAY_PUBLIC_DOMAIN") or "dealgamingitalia-production.up.railway.app"
     path = "telegram-webhook"
@@ -173,7 +215,9 @@ async def main():
     print("🌐 WEBHOOK MODE")
     print("🎨 GRAFICA AUTOMATICA")
     print("📢 SOLO PUBBLICAZIONE NEI CANALI")
+    print("📸 FOTO + COMANDO SEPARATI: ATTIVO")
     print("================================", flush=True)
+
     await app.initialize()
     await app.start()
     await app.updater.start_webhook(
