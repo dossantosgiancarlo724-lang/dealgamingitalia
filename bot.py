@@ -3,7 +3,7 @@ import json
 import os
 from io import BytesIO
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -38,16 +38,15 @@ def salva_utenti(database):
 
 
 def e_gaming(nome):
-    nome = nome.lower()
-    return any(parola in nome for parola in PAROLE_GAMING)
+    return any(parola in nome.lower() for parola in PAROLE_GAMING)
 
 
 def font(size, bold=False):
-    candidates = [
+    paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
     ]
-    for path in candidates:
+    for path in paths:
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
@@ -62,56 +61,32 @@ def ellissi(draw, text, fnt, max_width):
 
 
 def crea_grafica(nome, prezzo, sconto, immagine_bytes):
-    """Crea una grafica verticale 1080x1350 per il post Telegram."""
     W, H = 1080, 1350
     canvas = Image.new("RGB", (W, H), "#f4f5f7")
     draw = ImageDraw.Draw(canvas)
-
-    # Testata
     draw.rounded_rectangle((35, 35, W - 35, 190), radius=32, fill="#111827")
     draw.text((70, 58), "DEAL GAMING ITALIA", font=font(42, True), fill="white")
     draw.text((72, 118), "🔥 OCCASIONE ECCEZIONALE", font=font(30, True), fill="#fbbf24")
 
-    # Immagine prodotto dentro una card
     try:
         product = Image.open(BytesIO(immagine_bytes)).convert("RGB")
         product.thumbnail((880, 610), Image.Resampling.LANCZOS)
         card = Image.new("RGB", (920, 650), "white")
-        px = (920 - product.width) // 2
-        py = (650 - product.height) // 2
-        card.paste(product, (px, py))
+        card.paste(product, ((920 - product.width) // 2, (650 - product.height) // 2))
         canvas.paste(card, (80, 225))
         draw.rounded_rectangle((80, 225, 1000, 875), radius=28, outline="#d1d5db", width=3)
     except Exception:
         draw.rounded_rectangle((80, 225, 1000, 875), radius=28, fill="white", outline="#d1d5db", width=3)
 
-    # Badge sconto
-    badge = f"-{sconto:.0f}%"
     draw.rounded_rectangle((790, 255, 965, 345), radius=24, fill="#dc2626")
-    draw.text((815, 275), badge, font=font(48, True), fill="white")
-
-    # Nome
-    nome_font = font(40, True)
-    nome_testo = ellissi(draw, nome, nome_font, 920)
-    draw.text((80, 925), nome_testo, font=nome_font, fill="#111827")
-
-    # Prezzo
+    draw.text((815, 275), f"-{sconto:.0f}%", font=font(48, True), fill="white")
+    draw.text((80, 925), ellissi(draw, nome, font(40, True), 920), font=font(40, True), fill="#111827")
     draw.text((80, 995), "PREZZO DELL'OFFERTA", font=font(24, True), fill="#6b7280")
-    prezzo_testo = f"{prezzo:.2f} €"
-    draw.text((80, 1020), prezzo_testo, font=font(72, True), fill="#16a34a")
-
-    # Risparmio
+    draw.text((80, 1020), f"{prezzo:.2f} €", font=font(72, True), fill="#16a34a")
     risparmio = prezzo * sconto / 100
-    draw.text(
-        (80, 1115),
-        f"💸 Risparmio indicativo: {risparmio:.2f} €",
-        font=font(28, True),
-        fill="#374151",
-    )
-
-    # Footer
+    draw.text((80, 1115), f"Risparmio indicativo: {risparmio:.2f} €", font=font(28, True), fill="#374151")
     draw.rounded_rectangle((80, 1180, 1000, 1275), radius=24, fill="#111827")
-    draw.text((260, 1204), "🛒 ACQUISTA ORA", font=font(38, True), fill="white")
+    draw.text((260, 1204), "ACQUISTA ORA", font=font(38, True), fill="white")
 
     output = BytesIO()
     output.name = "offerta.png"
@@ -126,7 +101,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in database["utenti"]:
         database["utenti"].append(user_id)
         salva_utenti(database)
-
     await update.message.reply_text(
         "🔔 AVVISI ATTIVATI!\n\n"
         "Riceverai una notifica quando troviamo un'occasione davvero interessante. 🔥\n\n"
@@ -140,65 +114,34 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in database["utenti"]:
         database["utenti"].remove(user_id)
         salva_utenti(database)
-
-    await update.message.reply_text(
-        "🔕 Avvisi disattivati.\n\n"
-        "Puoi riattivarli in qualsiasi momento con /start."
-    )
+    await update.message.reply_text("🔕 Avvisi disattivati.\n\nPuoi riattivarli in qualsiasi momento con /start.")
 
 
 async def pubblica_offerta(nome, prezzo, sconto, link, immagine):
-    if e_gaming(nome):
-        canale = CHANNEL_GAMING
-        categoria = "🎮 GAMING"
-    else:
-        canale = CHANNEL_GENERAL
-        categoria = "🛍️ SUPER DEAL"
-
+    canale = CHANNEL_GAMING if e_gaming(nome) else CHANNEL_GENERAL
+    categoria = "🎮 GAMING" if e_gaming(nome) else "🛍️ SUPER DEAL"
     risparmio = prezzo * sconto / 100
     messaggio = (
         "🔥 <b>OFFERTA DA NON PERDERE!</b> 🔥\n\n"
-        f"{categoria}\n\n"
-        f"📦 <b>{nome}</b>\n\n"
-        f"💰 <b>{prezzo:.2f} €</b>\n"
-        f"📉 <b>-{sconto:.0f}%</b> di sconto\n"
+        f"{categoria}\n\n📦 <b>{nome}</b>\n\n"
+        f"💰 <b>{prezzo:.2f} €</b>\n📉 <b>-{sconto:.0f}%</b> di sconto\n"
         f"💸 Risparmi circa <b>{risparmio:.2f} €</b>\n\n"
         "🟢 <b>OFFERTA ATTIVA</b>\n\n"
-        "⚡ Se il prezzo ti interessa, controllalo subito: "
-        "le offerte possono terminare in qualsiasi momento.\n\n"
+        "⚡ Controllala subito: le offerte possono terminare in qualsiasi momento.\n\n"
         "👇 <b>VEDI L'OFFERTA</b>"
     )
-
-    pulsante = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 ACQUISTA ORA", url=link)]
-    ])
-
+    pulsante = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA", url=link)]])
     bot = Bot(token=TOKEN)
     try:
-        # Scarica l'immagine originale inviata nel test e crea la grafica automaticamente.
         file = await bot.get_file(immagine)
         image_bytes = bytes(await file.download_as_bytearray())
         grafica = crea_grafica(nome, prezzo, sconto, image_bytes)
-
-        await bot.send_photo(
-            chat_id=canale,
-            photo=grafica,
-            caption=messaggio,
-            parse_mode="HTML",
-            reply_markup=pulsante,
-        )
-
+        await bot.send_photo(chat_id=canale, photo=grafica, caption=messaggio, parse_mode="HTML", reply_markup=pulsante)
         database = carica_utenti()
         for user_id in database["utenti"]:
             try:
                 grafica.seek(0)
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=grafica,
-                    caption=messaggio,
-                    parse_mode="HTML",
-                    reply_markup=pulsante,
-                )
+                await bot.send_photo(chat_id=user_id, photo=grafica, caption=messaggio, parse_mode="HTML", reply_markup=pulsante)
             except Exception as errore:
                 print(f"⚠️ Impossibile inviare a {user_id}: {errore}")
     finally:
@@ -209,57 +152,33 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Non sei autorizzato a usare questo comando.")
         return
-
     if not update.message.photo:
-        await update.message.reply_text(
-            "📸 Devi inviare /offerta come DIDASCALIA di una foto.\n\n"
-            "Esempio:\n/offerta PS5 648 10 https://amzn.eu/..."
-        )
+        await update.message.reply_text("📸 Invia /offerta come didascalia di una foto.\n\n/offerta PS5 648 10 https://amzn.eu/...")
         return
-
-    didascalia = update.message.caption or ""
-    parti = didascalia.split(maxsplit=4)
+    parti = (update.message.caption or "").split(maxsplit=4)
     if len(parti) != 5 or parti[0] != "/offerta":
-        await update.message.reply_text(
-            "❌ Formato non corretto.\n\n"
-            "Usa:\n/offerta NOME PREZZO SCONTO LINK"
-        )
+        await update.message.reply_text("❌ Usa: /offerta NOME PREZZO SCONTO LINK")
         return
-
     _, nome, prezzo_testo, sconto_testo, link = parti
-
     try:
         prezzo = float(prezzo_testo.replace(",", "."))
         sconto = float(sconto_testo.replace(",", "."))
     except ValueError:
         await update.message.reply_text("❌ Prezzo o sconto non validi.")
         return
-
     if prezzo <= 0 or not 0 <= sconto <= 100:
         await update.message.reply_text("❌ Controlla prezzo e sconto.")
         return
-
-    immagine = update.message.photo[-1].file_id
-
     try:
-        await pubblica_offerta(nome, prezzo, sconto, link, immagine)
-        await update.message.reply_text(
-            "✅ OFFERTA PUBBLICATA!\n\n"
-            "🎨 Grafica automatica: OK\n"
-            "📢 Canale: OK\n"
-            "🛒 Pulsante: OK\n"
-            "🔔 Notifiche: OK"
-        )
+        await pubblica_offerta(nome, prezzo, sconto, link, update.message.photo[-1].file_id)
+        await update.message.reply_text("✅ OFFERTA PUBBLICATA!\n\n🎨 Grafica automatica: OK\n📢 Canale: OK\n🛒 Pulsante: OK\n🔔 Notifiche: OK")
     except Exception as errore:
         print(f"❌ ERRORE /offerta: {errore}")
         await update.message.reply_text("❌ Errore durante la pubblicazione. Controlla i log.")
 
 
 async def id_utente(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"🆔 Il tuo Telegram ID è:\n\n<code>{update.effective_user.id}</code>",
-        parse_mode="HTML",
-    )
+    await update.message.reply_text(f"🆔 Il tuo Telegram ID è:\n\n<code>{update.effective_user.id}</code>", parse_mode="HTML")
 
 
 async def main():
@@ -272,9 +191,14 @@ async def main():
     application.add_handler(CommandHandler("offerta", offerta))
     application.add_handler(CommandHandler("id", id_utente))
 
+    port = int(os.getenv("PORT", "8080"))
+    public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "dealgamingitalia-production.up.railway.app")
+    webhook_path = f"webhook/{TOKEN}"
+    webhook_url = f"https://{public_domain}/{webhook_path}"
+
     print("================================")
     print("🤖 DealGaming Bot ONLINE!")
-    print("🔥 Sistema offerte attivo!")
+    print("🌐 Modalità webhook attiva!")
     print("🎨 Grafica automatica attiva!")
     print("🎮 DealGaming Italia")
     print("🛍️ SuperDeal Italia")
@@ -282,7 +206,14 @@ async def main():
 
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
+    await application.updater.start_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=webhook_path,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
     try:
         while True:
