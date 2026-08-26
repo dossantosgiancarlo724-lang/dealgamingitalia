@@ -214,7 +214,7 @@ async def publish_rss_deal(entry, amazon_link=None):
     text = f"{title} {summary}"
     discount = extract_discount(text)
     price = extract_price(text)
-    if discount < MIN_DISCOUNT or not article_url:
+    if not article_url:
         return False
 
     if not AMAZON_TAG:
@@ -236,7 +236,7 @@ async def publish_rss_deal(entry, amazon_link=None):
     caption = (
         f"🔥 <b>OFFERTA TROVATA!</b>\n\n{category}\n\n"
         f"📦 <b>{title}</b>\n\n{price_line}"
-        f"📉 <b>-{discount}%</b>\n\n"
+        f"{'📉 <b>-' + str(discount) + '%</b>' if discount else '✅ <b>Offerta verificata</b>'}\n\n"
         "⚡ Controlla subito l'offerta: prezzo e disponibilità possono cambiare.\n\n"
         "👇 <b>CONTROLLA L'OFFERTA</b>"
     )
