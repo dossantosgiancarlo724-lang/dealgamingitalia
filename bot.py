@@ -18,6 +18,7 @@ CHANNEL_GAMING = "@DealGamingItalia"
 CHANNEL_GENERAL = "@SuperDealItalia"
 ADMIN_ID = 8816533518
 RSS_URL = "https://www.tomshw.it/feed-rss"
+DEALS_PAGE_URL = "https://www.tomshw.it/offerte"
 AUTO_DEALS = os.getenv("AUTO_DEALS", "true").lower() == "true"
 AUTO_DEAL_INTERVAL = int(os.getenv("AUTO_DEAL_INTERVAL", "900"))
 MIN_DISCOUNT = float(os.getenv("AUTO_DEAL_MIN_DISCOUNT", "30"))
@@ -154,17 +155,59 @@ def get_image_from_article(url):
 
 
 def get_feed_entries():
-    return feedparser.parse(RSS_URL).entries or []
+    """Load the RSS through requests so HTTP failures are visible in Railway logs."""
+    try:
+        response = requests.get(RSS_URL, timeout=25, headers={"User-Agent": "DealGamingItalia/1.1 (+RSS monitor)"})
+        response.raise_for_status()
+        parsed = feedparser.parse(response.content)
+        if parsed.bozo:
+            print(f"⚠️ RSS non perfettamente valido: {parsed.bozo_exception}", flush=True)
+        return list(parsed.entries or [])
+    except Exception as exc:
+        print(f"❌ RSS FETCH ERROR: {type(exc).__name__}: {exc}", flush=True)
+        return []
+
+
+def get_offers_page_entries():
+    """Discover recent offer articles from the public offers page as a RSS fallback."""
+    try:
+        html = fetch_article(DEALS_PAGE_URL)
+        soup = BeautifulSoup(html, "html.parser")
+        entries, seen_urls = [], set()
+        for article in soup.select("article"):
+            link = article.find("a", href=True)
+            heading = article.find(["h1", "h2", "h3", "h4"])
+            if not link:
+                continue
+            url = urljoin(DEALS_PAGE_URL, link["href"])
+            title = (heading.get_text(" ", strip=True) if heading else link.get_text(" ", strip=True))
+            text = article.get_text(" ", strip=True)
+            if not title or url in seen_urls or "tomshw.it" not in urlparse(url).netloc:
+                continue
+            seen_urls.add(url)
+            entries.append({"id": url, "link": url, "title": title, "summary": text})
+        print(f"📄 PAGINA OFFERTE → articoli={len(entries)}", flush=True)
+        return entries
+    except Exception as exc:
+        print(f"❌ PAGINA OFFERTE ERROR: {type(exc).__name__}: {exc}", flush=True)
+        return []
+
+
+def entry_text(entry):
+    title = entry.get("title", "")
+    summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
+    return f"{title} {summary}"
 
 
 def article_is_deal(entry):
-    title = entry.get("title", "")
-    summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
-    text = f"{title} {summary}"
-    return "offert" in text.lower() or extract_discount(text) >= MIN_DISCOUNT
+    text = entry_text(entry)
+    lowered = text.lower()
+    # The source labels genuine offer articles with "offerta"; discount text may only
+    # appear inside the article, so it is not required at discovery time.
+    return "offert" in lowered or extract_discount(text) >= MIN_DISCOUNT
 
 
-async def publish_rss_deal(entry):
+async def publish_rss_deal(entry, amazon_link=None):
     title = entry.get("title", "Offerta")
     article_url = entry.get("link")
     summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
@@ -178,7 +221,7 @@ async def publish_rss_deal(entry):
         print("⚠️ AMAZON_TAG non configurato: offerta automatica saltata.", flush=True)
         return False
 
-    amazon_link = await asyncio.to_thread(find_amazon_product_link, article_url)
+    amazon_link = amazon_link or await asyncio.to_thread(find_amazon_product_link, article_url)
     if not amazon_link:
         print(f"ℹ️ Nessun link Amazon.it diretto trovato: {title}", flush=True)
         return False
@@ -211,32 +254,62 @@ async def publish_rss_deal(entry):
 
 async def automatic_rss_once():
     if not AUTO_DEALS:
+        print("⏸️ CICLO OFFERTE disattivato da AUTO_DEALS.", flush=True)
         return
+
+    print("🔄 CICLO OFFERTE → avvio", flush=True)
     seen = load_seen()
-    entries = list(reversed(get_feed_entries()))
-    published = 0
-    for entry in entries:
+    rss_entries = await asyncio.to_thread(get_feed_entries)
+    page_entries = await asyncio.to_thread(get_offers_page_entries)
+
+    # Keep the most recent version of each URL while preserving deterministic order.
+    all_entries, entry_urls = [], set()
+    for entry in list(reversed(rss_entries)) + list(reversed(page_entries)):
         uid = entry.get("id") or entry.get("link")
-        if not uid or uid in seen or not article_is_deal(entry):
-            continue
+        if uid and uid not in entry_urls:
+            entry_urls.add(uid)
+            all_entries.append(entry)
+
+    candidates = [entry for entry in all_entries
+                  if (entry.get("id") or entry.get("link")) not in seen and article_is_deal(entry)]
+    print(f"🔎 CICLO OFFERTE → feed={len(rss_entries)} pagina={len(page_entries)} candidate={len(candidates)}", flush=True)
+
+    verified = 0
+    published = 0
+    for entry in candidates[:30]:
+        uid = entry.get("id") or entry.get("link")
         try:
-            if await publish_rss_deal(entry):
+            # A candidate is verified only when the source article contains a direct,
+            # taggable Amazon.it link. This prevents publishing non-buyable articles.
+            amazon_link = await asyncio.to_thread(find_amazon_product_link, entry.get("link"))
+            if not amazon_link:
+                print(f"⏭️ OFFERTA SCARTATA → link Amazon assente: {entry.get('title', '')[:90]}", flush=True)
+                continue
+            verified += 1
+            print(f"✅ OFFERTA VERIFICATA → {entry.get('title', '')[:90]}", flush=True)
+            if await publish_rss_deal(entry, amazon_link=amazon_link):
                 seen[uid] = True
                 published += 1
                 save_seen(seen)
-                print(f"🔥 RSS DEAL PUBBLICATO: {entry.get('title')}", flush=True)
+                print(f"📢 OFFERTA PUBBLICATA → {entry.get('title', '')[:90]}", flush=True)
                 if published >= 2:
                     break
         except Exception as exc:
-            print(f"❌ RSS DEAL ERROR: {exc}", flush=True)
+            print(f"❌ OFFERTA ERROR → {type(exc).__name__}: {exc}", flush=True)
+
+    print(f"📊 CICLO OFFERTE → candidate={len(candidates)} verificate={verified} pubblicate={published}", flush=True)
     if len(seen) > 1000:
         save_seen({k: True for k in list(seen)[-500:]})
 
 
 async def automatic_loop():
-    print("🔎 Motore RSS offerte avviato.", flush=True)
+    print(f"🔎 Motore offerte avviato (intervallo {AUTO_DEAL_INTERVAL}s).", flush=True)
     while True:
-        await automatic_rss_once()
+        try:
+            await automatic_rss_once()
+        except Exception as exc:
+            # Never let a malformed feed or one article stop the scheduler.
+            print(f"❌ CICLO OFFERTE FATALE → {type(exc).__name__}: {exc}", flush=True)
         await asyncio.sleep(AUTO_DEAL_INTERVAL)
 
 
