@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import re
@@ -37,13 +38,14 @@ def font(size, bold=False):
     return ImageFont.truetype(path, size) if os.path.exists(path) else ImageFont.load_default()
 
 
-def crea_grafica(titolo, prezzo, sconto, image_bytes=None):
+def crea_grafica(titolo, prezzo, sconto, image_bytes=None, gaming=False):
     W, H = 1080, 1350
     img = Image.new("RGB", (W, H), "#f5f5f5")
     d = ImageDraw.Draw(img)
+    brand = "DEAL GAMING ITALIA" if gaming else "SUPER DEAL ITALIA"
     d.rounded_rectangle((35, 35, 1045, 185), 30, fill="#101828")
-    d.text((70, 55), "DEAL GAMING ITALIA", font=font(42, True), fill="white")
-    d.text((70, 115), "🔥 OFFERTA SELEZIONATA", font=font(30, True), fill="#fbbf24")
+    d.text((70, 55), brand, font=font(42, True), fill="white")
+    d.text((70, 115), "🔥 SUPER OFFERTA", font=font(30, True), fill="#fbbf24")
     if image_bytes:
         try:
             product = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -57,11 +59,12 @@ def crea_grafica(titolo, prezzo, sconto, image_bytes=None):
     else:
         d.rounded_rectangle((80, 220, 1000, 860), 28, fill="white", outline="#d0d5dd", width=3)
         d.text((330, 505), "OFFERTA", font=font(65, True), fill="#101828")
-    d.rounded_rectangle((795, 250, 970, 345), 24, fill="#e12d39")
-    d.text((820, 270), f"-{sconto:.0f}%", font=font(48, True), fill="white")
+    if sconto:
+        d.rounded_rectangle((795, 250, 970, 345), 24, fill="#e12d39")
+        d.text((820, 270), f"-{sconto:.0f}%", font=font(48, True), fill="white")
     d.text((80, 910), (titolo or "Offerta")[:45], font=font(38, True), fill="#101828")
     if prezzo is not None:
-        d.text((80, 985), "PREZZO", font=font(24, True), fill="#667085")
+        d.text((80, 985), "ORA", font=font(24, True), fill="#667085")
         d.text((80, 1010), f"{prezzo:.2f} €", font=font(70, True), fill="#12b76a")
     d.rounded_rectangle((80, 1170, 1000, 1270), 24, fill="#101828")
     d.text((285, 1195), "🛒 VEDI L'OFFERTA", font=font(36, True), fill="white")
@@ -95,7 +98,7 @@ def save_active_deals(data):
 def amazon_offer_is_ended(url):
     """Return True only for explicit Amazon unavailability messages."""
     try:
-        response = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.1)"})
+        response = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.2)"})
         response.raise_for_status()
         page_text = BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True).lower()
         unavailable_markers = (
@@ -124,7 +127,7 @@ async def expire_finished_deals():
             if not await asyncio.to_thread(amazon_offer_is_ended, deal["amazon_link"]):
                 continue
             expired_caption = (
-                f"{deal.get('caption', '🚨 <b>OFFERTA TOP</b> 🚨')}\n\n"
+                f"{deal.get('caption', '🔥 <b>SUPER OFFERTA</b>')}\n\n"
                 "❌ <b>OFFERTA TERMINATA</b>\n"
                 "<i>Il prodotto non risulta più disponibile al prezzo segnalato.</i>"
             )
@@ -156,15 +159,62 @@ def extract_discount(text):
     return max(values) if values else 0
 
 
-def extract_price(text):
+def extract_prices(text):
     matches = re.findall(r"(?<!\d)(\d{1,5}(?:[.,]\d{1,2})?)\s*€", text or "")
-    if not matches: return None
-    try: return float(matches[-1].replace(".", "").replace(",", "."))
-    except ValueError: return None
+    values = []
+    for value in matches:
+        try:
+            values.append(float(value.replace(".", "").replace(",", ".")))
+        except ValueError:
+            pass
+    return values
+
+
+def extract_price(text):
+    values = extract_prices(text)
+    return values[-1] if values else None
+
+
+def calculate_original_price(current_price, discount):
+    if current_price is None or not discount or discount >= 100:
+        return None
+    return current_price / (1 - (discount / 100.0))
+
+
+def format_eur(value):
+    if value is None:
+        return "n/d"
+    return f"€{value:.2f}"
+
+
+def build_deal_caption(title, current_price, discount, gaming):
+    category = "🔥 <b>SUPER OFFERTA – GAMING</b>" if gaming else "🔥 <b>SUPER OFFERTA</b>"
+    safe_title = html.escape(title or "Offerta")
+    lines = [category, f"🎮 <b>{safe_title}</b>", "━━━━━━━━━━━━━━━━"]
+
+    original_price = calculate_original_price(current_price, discount)
+    if current_price is not None and original_price is not None:
+        saved = max(0.0, original_price - current_price)
+        lines.extend([
+            f"💸 Prima: <s>{format_eur(original_price)}</s>",
+            f"✅ Ora: <b>{format_eur(current_price)}</b>",
+            f"📉 Sconto: <b>-{discount:.0f}%</b> (risparmi {format_eur(saved)})",
+        ])
+    elif current_price is not None:
+        lines.append(f"✅ Ora: <b>{format_eur(current_price)}</b>")
+        lines.append("📉 Sconto: <b>da verificare</b>")
+    else:
+        lines.append("💰 Prezzo: <b>da verificare</b>")
+
+    lines.extend([
+        "━━━━━━━━━━━━━━━━",
+        "⏳ <i>Offerta valida fino a esaurimento scorte oppure fino alla fine dell'offerta.</i>",
+    ])
+    return "\n".join(lines)
 
 
 def fetch_article(url):
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.0)"})
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.2)"})
     r.raise_for_status()
     return r.text
 
@@ -186,14 +236,13 @@ def make_affiliate_url(url):
 def find_amazon_product_link(article_url):
     """Find a direct Amazon.it product link in the source article, then tag it."""
     try:
-        html = fetch_article(article_url)
-        soup = BeautifulSoup(html, "html.parser")
+        html_text = fetch_article(article_url)
+        soup = BeautifulSoup(html_text, "html.parser")
         candidates = []
         for a in soup.find_all("a", href=True):
             absolute = urljoin(article_url, a["href"])
             tagged = make_affiliate_url(absolute)
             if tagged:
-                # Prefer product URLs (/dp/ or /gp/product/) over generic Amazon pages.
                 score = 2 if "/dp/" in absolute.lower() or "/gp/product/" in absolute.lower() else 1
                 candidates.append((score, tagged))
         if not candidates:
@@ -205,9 +254,9 @@ def find_amazon_product_link(article_url):
         return None
 
 
-def get_image_from_html(html):
+def get_image_from_html(html_text):
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html_text, "html.parser")
         meta = soup.find("meta", property="og:image")
         image_url = meta.get("content") if meta else None
         if image_url:
@@ -228,9 +277,8 @@ def get_image_from_article(url):
 
 
 def get_feed_entries():
-    """Load the RSS through requests so HTTP failures are visible in Railway logs."""
     try:
-        response = requests.get(RSS_URL, timeout=25, headers={"User-Agent": "DealGamingItalia/1.1 (+RSS monitor)"})
+        response = requests.get(RSS_URL, timeout=25, headers={"User-Agent": "DealGamingItalia/1.2 (+RSS monitor)"})
         response.raise_for_status()
         parsed = feedparser.parse(response.content)
         if parsed.bozo:
@@ -242,10 +290,9 @@ def get_feed_entries():
 
 
 def get_offers_page_entries():
-    """Discover recent offer articles from the public offers page as a RSS fallback."""
     try:
-        html = fetch_article(DEALS_PAGE_URL)
-        soup = BeautifulSoup(html, "html.parser")
+        html_text = fetch_article(DEALS_PAGE_URL)
+        soup = BeautifulSoup(html_text, "html.parser")
         entries, seen_urls = [], set()
         for article in soup.select("article"):
             link = article.find("a", href=True)
@@ -275,8 +322,6 @@ def entry_text(entry):
 def article_is_deal(entry):
     text = entry_text(entry)
     lowered = text.lower()
-    # The source labels genuine offer articles with "offerta"; discount text may only
-    # appear inside the article, so it is not required at discovery time.
     return "offert" in lowered or extract_discount(text) >= MIN_DISCOUNT
 
 
@@ -301,26 +346,9 @@ async def publish_rss_deal(entry, amazon_link=None):
 
     gaming = e_gaming(text)
     channel = CHANNEL_GAMING if gaming else CHANNEL_GENERAL
-    category = "🎮 GAMING" if gaming else "🛍️ SUPER DEAL"
     image = await asyncio.to_thread(get_image_from_article, article_url)
-
-    # We only show a price when it is supplied by the source. It is not treated as live Amazon pricing.
-    price_line = f"💰 <b>{price:.2f} €</b>" if price is not None else "💰 <b>PREZZO DA VERIFICARE</b>"
-    minimum_historical = "minimo storico" in text.lower()
-    deal_badge = "📉 <b>MINIMO STORICO</b>" if minimum_historical else (
-        f"📉 <b>SCONTO DEL {discount}%</b>" if discount else "✅ <b>OFFERTA VERIFICATA</b>"
-    )
-    caption = (
-        "🚨 <b>OFFERTA TOP</b> 🚨\n\n"
-        f"{category}\n\n"
-        f"📦 <i>{title}</i>\n\n"
-        f"{deal_badge}\n"
-        f"{price_line}\n\n"
-        "⚠️ <i>Prezzo e disponibilità possono cambiare rapidamente.</i>\n\n"
-        "👇 <b>CLICCA IL PULSANTE QUI SOTTO</b>\n\n"
-        "#offerte #affiliate"
-    )
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 VEDI OFFERTA SU AMAZON", url=amazon_link)]])
+    caption = build_deal_caption(title, price, discount, gaming)
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA →", url=amazon_link)]])
     bot = Bot(TOKEN)
     try:
         if image:
@@ -332,6 +360,7 @@ async def publish_rss_deal(entry, amazon_link=None):
         return {
             "channel": channel, "message_id": message.message_id, "amazon_link": amazon_link,
             "caption": caption, "has_photo": has_photo, "status": "active",
+            "title": title, "current_price": price, "discount": discount,
         }
     finally:
         await bot.shutdown()
@@ -348,7 +377,6 @@ async def automatic_rss_once():
     rss_entries = await asyncio.to_thread(get_feed_entries)
     page_entries = await asyncio.to_thread(get_offers_page_entries)
 
-    # Keep the most recent version of each URL while preserving deterministic order.
     all_entries, entry_urls = [], set()
     for entry in list(reversed(rss_entries)) + list(reversed(page_entries)):
         uid = entry.get("id") or entry.get("link")
@@ -365,8 +393,6 @@ async def automatic_rss_once():
     for entry in candidates[:30]:
         uid = entry.get("id") or entry.get("link")
         try:
-            # A candidate is verified only when the source article contains a direct,
-            # taggable Amazon.it link. This prevents publishing non-buyable articles.
             amazon_link = await asyncio.to_thread(find_amazon_product_link, entry.get("link"))
             if not amazon_link:
                 print(f"⏭️ OFFERTA SCARTATA → link Amazon assente: {entry.get('title', '')[:90]}", flush=True)
@@ -398,7 +424,6 @@ async def automatic_loop():
         try:
             await automatic_rss_once()
         except Exception as exc:
-            # Never let a malformed feed or one article stop the scheduler.
             print(f"❌ CICLO OFFERTE FATALE → {type(exc).__name__}: {exc}", flush=True)
         await asyncio.sleep(AUTO_DEAL_INTERVAL)
 
@@ -443,12 +468,21 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = bytes(await f.download_as_bytearray())
     finally:
         await bot.shutdown()
-    graphic = crea_grafica(name, price, discount, image_bytes)
+    gaming = e_gaming(name)
+    graphic = crea_grafica(name, price, discount, image_bytes, gaming=gaming)
+    caption = build_deal_caption(name, price, discount, gaming)
     bot = Bot(TOKEN)
     try:
-        channel = CHANNEL_GAMING if e_gaming(name) else CHANNEL_GENERAL
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA", url=link)]])
-        await bot.send_photo(chat_id=channel, photo=graphic, caption=f"🔥 <b>OFFERTA DA NON PERDERE!</b>\n\n📦 <b>{name}</b>\n💰 <b>{price:.2f} €</b>\n📉 <b>-{discount:.0f}%</b>\n\n👇 <b>ACQUISTA ORA</b>", parse_mode="HTML", reply_markup=keyboard)
+        channel = CHANNEL_GAMING if gaming else CHANNEL_GENERAL
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA →", url=link)]])
+        message = await bot.send_photo(chat_id=channel, photo=graphic, caption=caption, parse_mode="HTML", reply_markup=keyboard)
+        active_deals = load_active_deals()
+        active_deals[f"manual:{message.message_id}"] = {
+            "channel": channel, "message_id": message.message_id, "amazon_link": link,
+            "caption": caption, "has_photo": True, "status": "active",
+            "title": name, "current_price": price, "discount": discount,
+        }
+        save_active_deals(active_deals)
     finally:
         await bot.shutdown()
     context.user_data.pop("offerta_photo_id", None)
