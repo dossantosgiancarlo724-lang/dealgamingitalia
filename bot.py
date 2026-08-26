@@ -96,17 +96,13 @@ def save_active_deals(data):
 
 
 def amazon_offer_is_ended(url):
-    """Return True only for explicit Amazon unavailability messages."""
     try:
-        response = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.2)"})
+        response = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.3)"})
         response.raise_for_status()
         page_text = BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True).lower()
         unavailable_markers = (
-            "currently unavailable",
-            "temporarily out of stock",
-            "non disponibile per la consegna",
-            "questo articolo non è al momento disponibile",
-            "attualmente non disponibile",
+            "currently unavailable", "temporarily out of stock", "non disponibile per la consegna",
+            "questo articolo non è al momento disponibile", "attualmente non disponibile",
         )
         return any(marker in page_text for marker in unavailable_markers)
     except Exception as exc:
@@ -133,15 +129,9 @@ async def expire_finished_deals():
             )
             try:
                 if deal.get("has_photo"):
-                    await bot.edit_message_caption(
-                        chat_id=deal["channel"], message_id=deal["message_id"],
-                        caption=expired_caption, parse_mode="HTML", reply_markup=None,
-                    )
+                    await bot.edit_message_caption(chat_id=deal["channel"], message_id=deal["message_id"], caption=expired_caption, parse_mode="HTML", reply_markup=None)
                 else:
-                    await bot.edit_message_text(
-                        chat_id=deal["channel"], message_id=deal["message_id"],
-                        text=expired_caption, parse_mode="HTML", reply_markup=None,
-                    )
+                    await bot.edit_message_text(chat_id=deal["channel"], message_id=deal["message_id"], text=expired_caption, parse_mode="HTML", reply_markup=None)
                 deal["status"] = "expired"
                 deal["caption"] = expired_caption
                 changed += 1
@@ -155,12 +145,12 @@ async def expire_finished_deals():
 
 
 def extract_discount(text):
-    values = [int(x) for x in re.findall(r"(?:-|−)?\s*(\d{1,3})\s*%", text or "") if 0 <= int(x) <= 100]
+    values = [float(x) for x in re.findall(r"(?:-|−)?\s*(\d{1,3}(?:[.,]\d+)?)\s*%", text or "") if 0 <= float(x.replace(',', '.')) <= 100]
     return max(values) if values else 0
 
 
 def extract_prices(text):
-    matches = re.findall(r"(?<!\d)(\d{1,5}(?:[.,]\d{1,2})?)\s*€", text or "")
+    matches = re.findall(r"(?<!\d)(\d{1,6}(?:[.,]\d{1,2})?)\s*€", text or "")
     values = []
     for value in matches:
         try:
@@ -170,9 +160,31 @@ def extract_prices(text):
     return values
 
 
-def extract_price(text):
-    values = extract_prices(text)
-    return values[-1] if values else None
+def derive_prices_and_discount(text):
+    """Return (current, original, discount) using explicit data first, then price pairs."""
+    prices = extract_prices(text)
+    explicit_discount = extract_discount(text)
+
+    if explicit_discount and prices:
+        current = min(prices)
+        original = current / (1 - explicit_discount / 100.0)
+        return current, original, explicit_discount
+
+    # If the source does not give a percentage, infer it from a clear old/new pair.
+    # We only trust two distinct prices or a simple descending pair; otherwise the offer is skipped.
+    unique = []
+    for p in prices:
+        if p > 0 and all(abs(p - x) > 0.009 for x in unique):
+            unique.append(p)
+    if len(unique) >= 2:
+        original = max(unique)
+        current = min(unique)
+        if original > current:
+            discount = (original - current) / original * 100.0
+            if 0 < discount <= 100:
+                return current, original, discount
+
+    return None, None, None
 
 
 def calculate_original_price(current_price, discount):
@@ -187,24 +199,23 @@ def format_eur(value):
     return f"€{value:.2f}"
 
 
-def build_deal_caption(title, current_price, discount, gaming):
+def build_deal_caption(title, current_price, discount, gaming, original_price=None):
     category = "🔥 <b>SUPER OFFERTA – GAMING</b>" if gaming else "🔥 <b>SUPER OFFERTA</b>"
     safe_title = html.escape(title or "Offerta")
     lines = [category, f"🎮 <b>{safe_title}</b>", "━━━━━━━━━━━━━━━━"]
 
-    original_price = calculate_original_price(current_price, discount)
-    if current_price is not None and original_price is not None:
-        saved = max(0.0, original_price - current_price)
-        lines.extend([
-            f"💸 Prima: <s>{format_eur(original_price)}</s>",
-            f"✅ Ora: <b>{format_eur(current_price)}</b>",
-            f"📉 Sconto: <b>-{discount:.0f}%</b> (risparmi {format_eur(saved)})",
-        ])
+    if current_price is not None and discount is not None and discount > 0:
+        if original_price is None:
+            original_price = calculate_original_price(current_price, discount)
+        saved = max(0.0, original_price - current_price) if original_price is not None else None
+        if original_price is not None and saved is not None:
+            lines.extend([
+                f"💸 Prima: <s>{format_eur(original_price)}</s>",
+                f"✅ Ora: <b>{format_eur(current_price)}</b>",
+                f"📉 Sconto: <b>-{discount:.0f}%</b> (risparmi {format_eur(saved)})",
+            ])
     elif current_price is not None:
-        lines.append(f"✅ Ora: <b>{format_eur(current_price)}</b>")
-        lines.append("📉 Sconto: <b>da verificare</b>")
-    else:
-        lines.append("💰 Prezzo: <b>da verificare</b>")
+        lines.append(f"💰 Prezzo: <b>{format_eur(current_price)}</b>")
 
     lines.extend([
         "━━━━━━━━━━━━━━━━",
@@ -214,13 +225,12 @@ def build_deal_caption(title, current_price, discount, gaming):
 
 
 def fetch_article(url):
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.2)"})
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.3)"})
     r.raise_for_status()
     return r.text
 
 
 def make_affiliate_url(url):
-    """Add the configured Amazon.it Associate tag without using a shortener."""
     if not AMAZON_TAG or not url:
         return None
     parsed = urlparse(url)
@@ -234,7 +244,6 @@ def make_affiliate_url(url):
 
 
 def find_amazon_product_link(article_url):
-    """Find a direct Amazon.it product link in the source article, then tag it."""
     try:
         html_text = fetch_article(article_url)
         soup = BeautifulSoup(html_text, "html.parser")
@@ -278,7 +287,7 @@ def get_image_from_article(url):
 
 def get_feed_entries():
     try:
-        response = requests.get(RSS_URL, timeout=25, headers={"User-Agent": "DealGamingItalia/1.2 (+RSS monitor)"})
+        response = requests.get(RSS_URL, timeout=25, headers={"User-Agent": "DealGamingItalia/1.3 (+RSS monitor)"})
         response.raise_for_status()
         parsed = feedparser.parse(response.content)
         if parsed.bozo:
@@ -300,7 +309,7 @@ def get_offers_page_entries():
             if not link:
                 continue
             url = urljoin(DEALS_PAGE_URL, link["href"])
-            title = (heading.get_text(" ", strip=True) if heading else link.get_text(" ", strip=True))
+            title = heading.get_text(" ", strip=True) if heading else link.get_text(" ", strip=True)
             text = article.get_text(" ", strip=True)
             if not title or url in seen_urls or "tomshw.it" not in urlparse(url).netloc:
                 continue
@@ -330,11 +339,12 @@ async def publish_rss_deal(entry, amazon_link=None):
     article_url = entry.get("link")
     summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(" ")
     text = f"{title} {summary}"
-    discount = extract_discount(text)
-    price = extract_price(text)
+    current_price, original_price, discount = derive_prices_and_discount(text)
     if not article_url:
         return False
-
+    if current_price is None or original_price is None or discount is None or discount < MIN_DISCOUNT:
+        print(f"⏭️ OFFERTA SCARTATA → prezzo/sconto non verificabile: {title[:90]}", flush=True)
+        return False
     if not AMAZON_TAG:
         print("⚠️ AMAZON_TAG non configurato: offerta automatica saltata.", flush=True)
         return False
@@ -347,7 +357,7 @@ async def publish_rss_deal(entry, amazon_link=None):
     gaming = e_gaming(text)
     channel = CHANNEL_GAMING if gaming else CHANNEL_GENERAL
     image = await asyncio.to_thread(get_image_from_article, article_url)
-    caption = build_deal_caption(title, price, discount, gaming)
+    caption = build_deal_caption(title, current_price, discount, gaming, original_price=original_price)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 ACQUISTA ORA →", url=amazon_link)]])
     bot = Bot(TOKEN)
     try:
@@ -360,7 +370,7 @@ async def publish_rss_deal(entry, amazon_link=None):
         return {
             "channel": channel, "message_id": message.message_id, "amazon_link": amazon_link,
             "caption": caption, "has_photo": has_photo, "status": "active",
-            "title": title, "current_price": price, "discount": discount,
+            "title": title, "current_price": current_price, "original_price": original_price, "discount": discount,
         }
     finally:
         await bot.shutdown()
@@ -384,8 +394,7 @@ async def automatic_rss_once():
             entry_urls.add(uid)
             all_entries.append(entry)
 
-    candidates = [entry for entry in all_entries
-                  if (entry.get("id") or entry.get("link")) not in seen and article_is_deal(entry)]
+    candidates = [entry for entry in all_entries if (entry.get("id") or entry.get("link")) not in seen and article_is_deal(entry)]
     print(f"🔎 CICLO OFFERTE → feed={len(rss_entries)} pagina={len(page_entries)} candidate={len(candidates)}", flush=True)
 
     verified = 0
@@ -393,12 +402,16 @@ async def automatic_rss_once():
     for entry in candidates[:30]:
         uid = entry.get("id") or entry.get("link")
         try:
+            current_price, original_price, discount = await asyncio.to_thread(derive_prices_and_discount, entry_text(entry))
+            if current_price is None or original_price is None or discount is None or discount < MIN_DISCOUNT:
+                print(f"⏭️ OFFERTA SCARTATA → sconto non verificabile o sotto {MIN_DISCOUNT:.0f}%: {entry.get('title', '')[:90]}", flush=True)
+                continue
             amazon_link = await asyncio.to_thread(find_amazon_product_link, entry.get("link"))
             if not amazon_link:
                 print(f"⏭️ OFFERTA SCARTATA → link Amazon assente: {entry.get('title', '')[:90]}", flush=True)
                 continue
             verified += 1
-            print(f"✅ OFFERTA VERIFICATA → {entry.get('title', '')[:90]}", flush=True)
+            print(f"✅ OFFERTA VERIFICATA → {entry.get('title', '')[:90]} | {format_eur(original_price)} → {format_eur(current_price)} = -{discount:.1f}%", flush=True)
             published_deal = await publish_rss_deal(entry, amazon_link=amazon_link)
             if published_deal:
                 seen[uid] = True
@@ -470,7 +483,8 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.shutdown()
     gaming = e_gaming(name)
     graphic = crea_grafica(name, price, discount, image_bytes, gaming=gaming)
-    caption = build_deal_caption(name, price, discount, gaming)
+    original = calculate_original_price(price, discount)
+    caption = build_deal_caption(name, price, discount, gaming, original_price=original)
     bot = Bot(TOKEN)
     try:
         channel = CHANNEL_GAMING if gaming else CHANNEL_GENERAL
@@ -480,7 +494,7 @@ async def offerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_deals[f"manual:{message.message_id}"] = {
             "channel": channel, "message_id": message.message_id, "amazon_link": link,
             "caption": caption, "has_photo": True, "status": "active",
-            "title": name, "current_price": price, "discount": discount,
+            "title": name, "current_price": price, "original_price": original, "discount": discount,
         }
         save_active_deals(active_deals)
     finally:
