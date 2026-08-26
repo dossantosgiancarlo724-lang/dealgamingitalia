@@ -150,13 +150,45 @@ def extract_discount(text):
 
 
 def extract_prices(text):
-    matches = re.findall(r"(?<!\d)(\d{1,6}(?:[.,]\d{1,2})?)\s*€", text or "")
+    """Extract prices in European format: 1.159€, 1.159,00 €, 749€, etc."""
+    matches = re.findall(r'(?:^|[^\d.,])\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)\s*€', text or "")
     values = []
-    for value in matches:
-        try:
-            values.append(float(value.replace(".", "").replace(",", ".")))
-        except ValueError:
-            pass
+    for match in matches:
+        # In European format: dot is thousands separator, rightmost comma is decimal
+        # Examples: "1.159€" → "1.159" → 1159.0
+        #           "1.159,00 €" → "1.159,00" → 1159.00
+        #           "749€" → "749" → 749.0
+        value = match.strip()
+        # Count dots and commas to determine their roles
+        dot_count = value.count('.')
+        comma_count = value.count(',')
+
+        if dot_count == 0 and comma_count == 0:
+            # Simple case: "749"
+            try:
+                values.append(float(value))
+            except ValueError:
+                pass
+        elif dot_count > 0 and comma_count == 0:
+            # Only dots: "1.159" (thousands separator, no decimal)
+            try:
+                values.append(float(value.replace('.', '')))
+            except ValueError:
+                pass
+        elif dot_count == 0 and comma_count == 1:
+            # Only comma: "749,50" (decimal only, no thousands)
+            try:
+                values.append(float(value.replace(',', '.')))
+            except ValueError:
+                pass
+        elif dot_count > 0 and comma_count == 1:
+            # Both: "1.159,50" (dot=thousands, rightmost comma=decimal)
+            try:
+                values.append(float(value.replace('.', '').replace(',', '.')))
+            except ValueError:
+                pass
+        # Any other combo is malformed; skip
+
     return values
 
 
@@ -171,7 +203,8 @@ def derive_prices_and_discount(text):
         return current, original, explicit_discount
 
     # If the source does not give a percentage, infer it from a clear old/new pair.
-    # We only trust two distinct prices or a simple descending pair; otherwise the offer is skipped.
+    # We only trust two distinct prices; otherwise the offer is ambiguous and is skipped
+    # rather than risk a false discount.
     unique = []
     for p in prices:
         if p > 0 and all(abs(p - x) > 0.009 for x in unique):
@@ -179,7 +212,7 @@ def derive_prices_and_discount(text):
     if len(unique) >= 2:
         original = max(unique)
         current = min(unique)
-        if original > current:
+        if original > current and current > 0:
             discount = (original - current) / original * 100.0
             if 0 < discount <= 100:
                 return current, original, discount
@@ -541,5 +574,29 @@ async def main():
         await app.shutdown()
 
 
+def test_price_parsing():
+    test_cases = [
+        ("Apple iPad Air 13\" M4 da 1.159€ a 1.059€", [1159.0, 1059.0]),
+        ("Prodotto da 1.159,00 € a 1.059,00 €", [1159.0, 1059.0]),
+        ("Monitor 749€ scontato a 499€", [749.0, 499.0]),
+        ("Prezzo singolo 199€", [199.0]),
+    ]
+    for text, expected in test_cases:
+        result = extract_prices(text)
+        # Sort both for comparison (order may vary)
+        result_sorted = sorted(result)
+        expected_sorted = sorted(expected)
+        assert len(result_sorted) == len(expected_sorted), f"Mismatch for '{text}': got {result_sorted}, expected {expected_sorted}"
+        for r, e in zip(result_sorted, expected_sorted):
+            assert abs(r - e) < 0.01, f"Value mismatch for '{text}': got {r}, expected {e}"
+        print(f"✓ PASSED: {text} → {result}")
+
+    # Test derive_prices_and_discount
+    assert derive_prices_and_discount("1.159€ a 1.059€")[0] is not None, "Should accept two prices"
+    assert derive_prices_and_discount("199€")[0] is None, "Should reject single price with no discount %"
+    print("✓ ALL TESTS PASSED")
+
+
 if __name__ == "__main__":
+    test_price_parsing()
     asyncio.run(main())
