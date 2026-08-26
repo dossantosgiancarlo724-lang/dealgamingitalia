@@ -231,16 +231,23 @@ async def publish_rss_deal(entry, amazon_link=None):
     category = "🎮 GAMING" if gaming else "🛍️ SUPER DEAL"
     image = await asyncio.to_thread(get_image_from_article, article_url)
 
-    # We only show a price when it is supplied by the source feed. It is not treated as live Amazon pricing.
-    price_line = f"💰 <b>{price:.2f} €</b>\n" if price is not None else ""
-    caption = (
-        f"🔥 <b>OFFERTA TROVATA!</b>\n\n{category}\n\n"
-        f"📦 <b>{title}</b>\n\n{price_line}"
-        f"{'📉 <b>-' + str(discount) + '%</b>' if discount else '✅ <b>Offerta verificata</b>'}\n\n"
-        "⚡ Controlla subito l'offerta: prezzo e disponibilità possono cambiare.\n\n"
-        "👇 <b>CONTROLLA L'OFFERTA</b>"
+    # We only show a price when it is supplied by the source. It is not treated as live Amazon pricing.
+    price_line = f"💰 <b>{price:.2f} €</b>" if price is not None else "💰 <b>PREZZO DA VERIFICARE</b>"
+    minimum_historical = "minimo storico" in text.lower()
+    deal_badge = "📉 <b>MINIMO STORICO</b>" if minimum_historical else (
+        f"📉 <b>SCONTO DEL {discount}%</b>" if discount else "✅ <b>OFFERTA VERIFICATA</b>"
     )
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 CONTROLLA ORA", url=amazon_link)]])
+    caption = (
+        "🚨 <b>OFFERTA TOP</b> 🚨\n\n"
+        f"{category}\n\n"
+        f"📦 <i>{title}</i>\n\n"
+        f"{deal_badge}\n"
+        f"{price_line}\n\n"
+        "⚠️ <i>Prezzo e disponibilità possono cambiare rapidamente.</i>\n\n"
+        "👇 <b>CLICCA IL PULSANTE QUI SOTTO</b>\n\n"
+        "#offerte #affiliate"
+    )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 VEDI OFFERTA SU AMAZON", url=amazon_link)]])
     bot = Bot(TOKEN)
     try:
         if image:
