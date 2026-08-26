@@ -23,6 +23,7 @@ AUTO_DEALS = os.getenv("AUTO_DEALS", "true").lower() == "true"
 AUTO_DEAL_INTERVAL = int(os.getenv("AUTO_DEAL_INTERVAL", "900"))
 MIN_DISCOUNT = float(os.getenv("AUTO_DEAL_MIN_DISCOUNT", "30"))
 SEEN_FILE = "rss_visti.json"
+ACTIVE_DEALS_FILE = "offerte_attive.json"
 
 PAROLE_GAMING = ["playstation", "ps5", "ps4", "ps3", "xbox", "nintendo", "switch", "switch 2", "steam deck", "rog ally", "gaming", "videogioco", "videogiochi", "gpu", "rtx", "radeon", "scheda video", "monitor gaming", "mouse gaming", "tastiera gaming", "cuffie gaming", "controller", "dual sense", "manette", "thrustmaster", "logitech"]
 
@@ -76,6 +77,78 @@ def load_seen():
 
 def save_seen(data):
     with open(SEEN_FILE, "w", encoding="utf-8") as f: json.dump(data, f, indent=2)
+
+
+def load_active_deals():
+    try:
+        with open(ACTIVE_DEALS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_active_deals(data):
+    with open(ACTIVE_DEALS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def amazon_offer_is_ended(url):
+    """Return True only for explicit Amazon unavailability messages."""
+    try:
+        response = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (compatible; DealGamingItalia/1.1)"})
+        response.raise_for_status()
+        page_text = BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True).lower()
+        unavailable_markers = (
+            "currently unavailable",
+            "temporarily out of stock",
+            "non disponibile per la consegna",
+            "questo articolo non è al momento disponibile",
+            "attualmente non disponibile",
+        )
+        return any(marker in page_text for marker in unavailable_markers)
+    except Exception as exc:
+        print(f"⚠️ CONTROLLO SCADENZA NON RIUSCITO: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+
+async def expire_finished_deals():
+    active = load_active_deals()
+    if not active:
+        return
+    bot = Bot(TOKEN)
+    changed = 0
+    try:
+        for deal_id, deal in list(active.items()):
+            if deal.get("status") != "active" or not deal.get("amazon_link"):
+                continue
+            if not await asyncio.to_thread(amazon_offer_is_ended, deal["amazon_link"]):
+                continue
+            expired_caption = (
+                f"{deal.get('caption', '🚨 <b>OFFERTA TOP</b> 🚨')}\n\n"
+                "❌ <b>OFFERTA TERMINATA</b>\n"
+                "<i>Il prodotto non risulta più disponibile al prezzo segnalato.</i>"
+            )
+            try:
+                if deal.get("has_photo"):
+                    await bot.edit_message_caption(
+                        chat_id=deal["channel"], message_id=deal["message_id"],
+                        caption=expired_caption, parse_mode="HTML", reply_markup=None,
+                    )
+                else:
+                    await bot.edit_message_text(
+                        chat_id=deal["channel"], message_id=deal["message_id"],
+                        text=expired_caption, parse_mode="HTML", reply_markup=None,
+                    )
+                deal["status"] = "expired"
+                deal["caption"] = expired_caption
+                changed += 1
+                print(f"❌ OFFERTA TERMINATA → messaggio {deal['message_id']}", flush=True)
+            except Exception as exc:
+                print(f"⚠️ AGGIORNAMENTO OFFERTA TERMINATA FALLITO: {type(exc).__name__}: {exc}", flush=True)
+        if changed:
+            save_active_deals(active)
+    finally:
+        await bot.shutdown()
 
 
 def extract_discount(text):
@@ -251,10 +324,15 @@ async def publish_rss_deal(entry, amazon_link=None):
     bot = Bot(TOKEN)
     try:
         if image:
-            await bot.send_photo(chat_id=channel, photo=image, caption=caption, parse_mode="HTML", reply_markup=keyboard)
+            message = await bot.send_photo(chat_id=channel, photo=image, caption=caption, parse_mode="HTML", reply_markup=keyboard)
+            has_photo = True
         else:
-            await bot.send_message(chat_id=channel, text=caption, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=False)
-        return True
+            message = await bot.send_message(chat_id=channel, text=caption, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=False)
+            has_photo = False
+        return {
+            "channel": channel, "message_id": message.message_id, "amazon_link": amazon_link,
+            "caption": caption, "has_photo": has_photo, "status": "active",
+        }
     finally:
         await bot.shutdown()
 
@@ -265,6 +343,7 @@ async def automatic_rss_once():
         return
 
     print("🔄 CICLO OFFERTE → avvio", flush=True)
+    await expire_finished_deals()
     seen = load_seen()
     rss_entries = await asyncio.to_thread(get_feed_entries)
     page_entries = await asyncio.to_thread(get_offers_page_entries)
@@ -294,10 +373,14 @@ async def automatic_rss_once():
                 continue
             verified += 1
             print(f"✅ OFFERTA VERIFICATA → {entry.get('title', '')[:90]}", flush=True)
-            if await publish_rss_deal(entry, amazon_link=amazon_link):
+            published_deal = await publish_rss_deal(entry, amazon_link=amazon_link)
+            if published_deal:
                 seen[uid] = True
-                published += 1
+                active_deals = load_active_deals()
+                active_deals[uid] = published_deal
                 save_seen(seen)
+                save_active_deals(active_deals)
+                published += 1
                 print(f"📢 OFFERTA PUBBLICATA → {entry.get('title', '')[:90]}", flush=True)
                 if published >= 2:
                     break
