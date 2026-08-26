@@ -17,7 +17,7 @@ AMAZON_TAG = os.getenv("AMAZON_TAG", "").strip()
 CHANNEL_GAMING = "@DealGamingItalia"
 CHANNEL_GENERAL = "@SuperDealItalia"
 ADMIN_ID = 8816533518
-RSS_URL = "https://www.tomshw.it/feed-rss"
+RSS_URL = "https://www.tomshw.it/feed/offerte"
 DEALS_PAGE_URL = "https://www.tomshw.it/offerte"
 AUTO_DEALS = os.getenv("AUTO_DEALS", "true").lower() == "true"
 AUTO_DEAL_INTERVAL = int(os.getenv("AUTO_DEAL_INTERVAL", "900"))
